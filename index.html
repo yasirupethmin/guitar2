@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kinetic Strings & Drums</title>
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --panel: rgba(20, 24, 34, 0.78);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --accent: #38bdf8;
+      --guitar: #f59e0b;
+      --drum: #ec4899;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: crosshair;
+    }
+
+    /* Minimal floating HUD */
+    .hud {
+      position: fixed;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      z-index: 10;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    }
+
+    .btn {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid transparent;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    .btn.active {
+      background: rgba(56, 189, 248, 0.16);
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #7dd3fc;
+    }
+
+    .divider {
+      width: 1px;
+      height: 18px;
+      background: var(--border);
+    }
+
+    .speed-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      padding: 0 6px;
+    }
+
+    input[type="range"] {
+      width: 72px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .hint {
+      position: fixed;
+      top: 68px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      color: var(--muted);
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="hud">
+    <button class="btn active" id="playBtn" title="Toggle moving pulses">▶ Play</button>
+    <div class="divider"></div>
+    <button class="btn active" data-shape="circle" title="Soft pluck / standard hit">● Circle</button>
+    <button class="btn" data-shape="triangle" title="Bright harmonic pluck">▲ Triangle</button>
+    <button class="btn" data-shape="diamond" title="Accented pluck">◆ Diamond</button>
+    <div class="divider"></div>
+    <button class="btn" id="spawnOrbBtn" title="Add another moving traveler">+ Orb</button>
+    <div class="speed-wrap">
+      <span>Tempo</span>
+      <input type="range" id="speedSlider" min="1.2" max="6" step="0.2" value="2.8" />
+    </div>
+    <div class="divider"></div>
+    <button class="btn" id="clearBtn" title="Clear shapes and sheet music">Clear</button>
+  </div>
+
+  <div class="hint" id="hintText">
+    Click strings or drum lanes to place shapes • Drag across strings to pluck • Watch sheet music write below
+  </div>
+
+  <canvas id="stage"></canvas>
+
+  <script>
+    const canvas = document.getElementById('stage');
+    const ctx = canvas.getContext('2d');
+
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    let dpr = window.devicePixelRatio || 1;
+
+    // Musical configuration: 6 Guitar Strings (E minor 9 / pentatonic voicing for rich harmony)
+    // and 3 Percussion lanes
+    const LANES = [
+      { id: 0, type: 'guitar', name: 'E5', freq: 659.25, staffStep: 8, color: '#38bdf8' }, // Top space E5
+      { id: 1, type: 'guitar', name: 'B4', freq: 493.88, staffStep: 5, color: '#60a5fa' }, // Middle line B4
+      { id: 2, type: 'guitar', name: 'G4', freq: 392.00, staffStep: 3, color: '#818cf8' }, // 2nd line G4
+      { id: 3, type: 'guitar', name: 'D4', freq: 293.66, staffStep: 0, color: '#a78bfa' }, // Below staff D4
+      { id: 4, type: 'guitar', name: 'A3', freq: 220.00, staffStep: -3, color: '#c084fc' }, // Ledger A3
+      { id: 5, type: 'guitar', name: 'E3', freq: 164.81, staffStep: -6, color: '#e879f9' }, // Low E3
+      { id: 6, type: 'drum',   name: 'HH', drum: 'hihat', staffStep: 9, color: '#fbbf24' }, // Hi-Hat (X notehead)
+      { id: 7, type: 'drum',   name: 'SN', drum: 'snare', staffStep: 4, color: '#f472b6' }, // Snare (C5 space)
+      { id: 8, type: 'drum',   name: 'KK', drum: 'kick',  staffStep: 1, color: '#fb7185' }  // Kick (E4 line)
+    ];
+
+    // State
+    let isPlaying = true;
+    let selectedShape = 'circle';
+    let baseSpeed = 2.8;
+    let shapes = [];
+    let orbs = [];
+    let ripples = [];
+    let sheetNotes = [];
+    let stringVibrations = LANES.map(() => ({ amp: 0, phase: 0 }));
+
+    // Pointer tracking for manual string strumming
+    let isPointerDown = false;
+    let lastPointer = { x: 0, y: 0 };
+    let pointerMoved = false;
+
+    // Web Audio Context
+    let audioCtx = null;
+
+    function initAudio() {
+      if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    // Synthesize realistic guitar pluck + drum sounds
+    function triggerSound(lane, shapeType = 'circle') {
+      initAudio();
+      if (!audioCtx) return;
+
+      const now = audioCtx.currentTime;
+
+      if (lane.type === 'guitar') {
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        const filter = audioCtx.createBiquadFilter();
+        const gain = audioCtx.createGain();
+
+        // Shape changes harmonic character
+        if (shapeType === 'triangle') {
+          osc1.type = 'sawtooth';
+          osc2.type = 'triangle';
+          filter.frequency.setValueAtTime(lane.freq * 6, now);
+        } else if (shapeType === 'diamond') {
+          osc1.type = 'square';
+          osc2.type = 'triangle';
+          filter.frequency.setValueAtTime(lane.freq * 5, now);
+        } else {
+          osc1.type = 'triangle';
+          osc2.type = 'sine';
+          filter.frequency.setValueAtTime(lane.freq * 3.8, now);
+        }
+
+        osc1.frequency.setValueAtTime(lane.freq, now);
+        osc2.frequency.setValueAtTime(lane.freq * 2, now); // Octave overtone
+
+        filter.type = 'lowpass';
+        filter.frequency.exponentialRampToValueAtTime(lane.freq * 0.9, now + 1.1);
+
+        const peakGain = shapeType === 'diamond' ? 0.26 : 0.2;
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(peakGain, now + 0.008);
+        gain.gain.exponentialRampToValueAtTime(0.0008, now + 1.45);
+
+        osc1.connect(filter);
+        osc2.connect(filter);
+        filter.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 1.5);
+        osc2.stop(now + 1.5);
+      } else {
+        // Drum synthesis
+        if (lane.drum === 'kick') {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(135, now);
+          osc.frequency.exponentialRampToValueAtTime(36, now + 0.14);
+
+          gain.gain.setValueAtTime(0.5, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(now);
+          osc.stop(now + 0.34);
+        } else if (lane.drum === 'snare') {
+          // Noise burst + body tone
+          const bufferSize = audioCtx.sampleRate * 0.18;
+          const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+          }
+          const noise = audioCtx.createBufferSource();
+          noise.buffer = buffer;
+
+          const filter = audioCtx.createBiquadFilter();
+          filter.type = 'highpass';
+          filter.frequency.setValueAtTime(700, now);
+
+          const noiseGain = audioCtx.createGain();
+          noiseGain.gain.setValueAtTime(0.25, now);
+          noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+          noise.connect(filter);
+          filter.connect(noiseGain);
+          noiseGain.connect(audioCtx.destination);
+          noise.start(now);
+
+          const bodyOsc = audioCtx.createOscillator();
+          const bodyGain = audioCtx.createGain();
+          bodyOsc.type = 'triangle';
+          bodyOsc.frequency.setValueAtTime(185, now);
+          bodyOsc.frequency.exponentialRampToValueAtTime(90, now + 0.09);
+          bodyGain.gain.setValueAtTime(0.22, now);
+          bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+          bodyOsc.connect(bodyGain);
+          bodyGain.connect(audioCtx.destination);
+          bodyOsc.start(now);
+          bodyOsc.stop(now + 0.11);
+        } else if (lane.drum === 'hihat') {
+          const bufferSize = audioCtx.sampleRate * 0.07;
+          const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+          }
+          const noise = audioCtx.createBufferSource();
+          noise.buffer = buffer;
+
+          const filter = audioCtx.createBiquadFilter();
+          filter.type = 'highpass';
+          filter.frequency.setValueAtTime(6500, now);
+
+          const gain = audioCtx.createGain();
+          const duration = shapeType === 'diamond' ? 0.16 : 0.06;
+          gain.gain.setValueAtTime(0.16, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+          noise.connect(filter);
+          filter.connect(gain);
+          gain.connect(audioCtx.destination);
+          noise.start(now);
+        }
+      }
+    }
+
+    // Layout geometry helpers
+    function getLayout() {
+      const topPad = 95;
+      const staffZoneHeight = 175;
+      const playHeight = height - topPad - staffZoneHeight;
+      const laneSpacing = playHeight / (LANES.length + 0.4);
+      const leftMargin = 80;
+      const rightMargin = width - 48;
+
+      return {
+        topPad,
+        staffZoneHeight,
+        laneSpacing,
+        leftMargin,
+        rightMargin,
+        getLaneY: (idx) => topPad + (idx + 0.7) * laneSpacing
+      };
+    }
+
+    function resize() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      dpr = window.devicePixelRatio || 1;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Seed an inviting initial pattern so user immediately sees & hears the concept
+    function seedStarterPattern() {
+      shapes = [
+        { laneIndex: 8, xRatio: 0.15, type: 'circle', glow: 0 },
+        { laneIndex: 5, xRatio: 0.15, type: 'circle', glow: 0 },
+        { laneIndex: 3, xRatio: 0.28, type: 'triangle', glow: 0 },
+        { laneIndex: 6, xRatio: 0.35, type: 'circle', glow: 0 },
+        { laneIndex: 7, xRatio: 0.48, type: 'diamond', glow: 0 },
+        { laneIndex: 2, xRatio: 0.48, type: 'circle', glow: 0 },
+        { laneIndex: 1, xRatio: 0.64, type: 'triangle', glow: 0 },
+        { laneIndex: 8, xRatio: 0.64, type: 'circle', glow: 0 },
+        { laneIndex: 0, xRatio: 0.80, type: 'diamond', glow: 0 },
+        { laneIndex: 7, xRatio: 0.85, type: 'circle', glow: 0 }
+      ];
+
+      orbs = [
+        { xRatio: 0.04, dir: 1, speedMult: 1.0, hue: '#38bdf8' }
+      ];
+    }
+
+    seedStarterPattern();
+
+    // Trigger note, string physics, visual ripple, and sheet music entry
+    function activateLane(laneIndex, xPos, shapeType = 'circle') {
+      const lane = LANES[laneIndex];
+      const layout = getLayout();
+      const yPos = layout.getLaneY(laneIndex);
+
+      triggerSound(lane, shapeType);
+
+      // Vibrate string or pulse drum lane
+      stringVibrations[laneIndex].amp = lane.type === 'guitar' ? 14 : 7;
+      stringVibrations[laneIndex].phase = 0;
+
+      // Expanding ripple
+      ripples.push({
+        x: xPos,
+        y: yPos,
+        r: 10,
+        alpha: 0.9,
+        color: lane.color
+      });
+
+      // Push note to the scrolling sheet music staff at the bottom
+      sheetNotes.push({
+        x: width - 90,
+        laneIndex,
+        staffStep: lane.staffStep,
+        isDrum: lane.type === 'drum',
+        drumType: lane.drum,
+        shapeType,
+        color: lane.color,
+        name: lane.name,
+        alpha: 1.0
+      });
+
+      if (sheetNotes.length > 80) {
+        sheetNotes.shift();
+      }
+    }
+
+    // Draw geometric shape node
+    function drawShapeNode(x, y, type, color, glow) {
+      ctx.save();
+      ctx.translate(x, y);
+
+      const radius = 11 + glow * 5;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10 + glow * 22;
+      ctx.fillStyle = glow > 0.1 ? '#ffffff' : color;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.6;
+
+      ctx.beginPath();
+      if (type === 'circle') {
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      } else if (type === 'triangle') {
+        for (let i = 0; i < 3; i++) {
+          const angle = -Math.PI / 2 + (i * Math.PI * 2) / 3;
+          const px = Math.cos(angle) * (radius + 2);
+          const py = Math.sin(angle) * (radius + 2);
+          i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+      } else if (type === 'diamond') {
+        ctx.moveTo(0, -radius - 2);
+        ctx.lineTo(radius + 2, 0);
+        ctx.lineTo(0, radius + 2);
+        ctx.lineTo(-radius - 2, 0);
+        ctx.closePath();
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Draw scrolling sheet music at the bottom
+    function drawSheetMusic() {
+      const staffBottomMargin = 32;
+      const lineSpacing = 12; // 12px between staff lines (step = 6px)
+      const stepSize = lineSpacing / 2;
+      const bottomLineY = height - staffBottomMargin - 20; // Line 1 (E4)
+      const topLineY = bottomLineY - 4 * lineSpacing;      // Line 5 (F5)
+      const leftX = 60;
+      const rightX = width - 48;
+
+      // Subtle translucent backing for the sheet music region
+      ctx.save();
+      ctx.fillStyle = 'rgba(13, 17, 26, 0.85)';
+      ctx.fillRect(0, topLineY - 38, width, height - (topLineY - 38));
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.beginPath();
+      ctx.moveTo(0, topLineY - 38);
+      ctx.lineTo(width, topLineY - 38);
+      ctx.stroke();
+
+      // 5 Staff Lines
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.22)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        const y = bottomLineY - i * lineSpacing;
+        ctx.beginPath();
+        ctx.moveTo(leftX, y);
+        ctx.lineTo(rightX, y);
+        ctx.stroke();
+      }
+
+      // Double barline at left + Treble Clef symbol
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.45)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(leftX, topLineY);
+      ctx.lineTo(leftX, bottomLineY);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(226, 232, 240, 0.75)';
+      ctx.font = '46px serif';
+      ctx.fillText('𝄞', leftX + 8, bottomLineY - 6);
+
+      // Engraving write-head line on the right
+      const writeX = width - 90;
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(writeX, topLineY - 16);
+      ctx.lineTo(writeX, bottomLineY + 16);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Draw each engraved note
+      for (let i = sheetNotes.length - 1; i >= 0; i--) {
+        const n = sheetNotes[i];
+        if (isPlaying) {
+          n.x -= baseSpeed * 0.65;
+        }
+
+        if (n.x < leftX + 42) {
+          n.alpha -= 0.05;
+          if (n.alpha <= 0) {
+            sheetNotes.splice(i, 1);
+            continue;
+          }
+        }
+
+        // step 1 = bottomLineY (E4). Each step moves up by stepSize (6px)
+        const noteY = bottomLineY - (n.staffStep - 1) * stepSize;
+
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, n.alpha);
+        ctx.strokeStyle = n.color;
+        ctx.fillStyle = n.color;
+        ctx.lineWidth = 1.6;
+
+        // Ledger lines for low guitar strings (step <= -1)
+        if (!n.isDrum && n.staffStep <= -1) {
+          for (let s = -1; s >= n.staffStep; s -= 2) {
+            const ly = bottomLineY - (s - 1) * stepSize;
+            ctx.beginPath();
+            ctx.moveTo(n.x - 10, ly);
+            ctx.lineTo(n.x + 10, ly);
+            ctx.stroke();
+          }
+        }
+
+        if (n.isDrum && n.drumType === 'hihat') {
+          // Cross (X) notehead for Hi-Hat
+          const r = 5;
+          ctx.beginPath();
+          ctx.moveTo(n.x - r, noteY - r);
+          ctx.lineTo(n.x + r, noteY + r);
+          ctx.moveTo(n.x + r, noteY - r);
+          ctx.lineTo(n.x - r, noteY + r);
+          ctx.stroke();
+        } else if (n.isDrum) {
+          // Diamond percussion notehead for Snare / Kick
+          ctx.beginPath();
+          ctx.moveTo(n.x, noteY - 5);
+          ctx.lineTo(n.x + 6, noteY);
+          ctx.lineTo(n.x, noteY + 5);
+          ctx.lineTo(n.x - 6, noteY);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          // Tilted oval notehead for guitar notes
+          ctx.save();
+          ctx.translate(n.x, noteY);
+          ctx.rotate(-0.32);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 6.2, 4.4, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Note stem
+        const stemUp = n.staffStep < 5;
+        ctx.beginPath();
+        if (stemUp) {
+          ctx.moveTo(n.x + 5.5, noteY);
+          ctx.lineTo(n.x + 5.5, noteY - 26);
+        } else {
+          ctx.moveTo(n.x - 5.5, noteY);
+          ctx.lineTo(n.x - 5.5, noteY + 26);
+        }
+        ctx.stroke();
+
+        // Subtle note label underneath/above freshly written notes
+        ctx.font = '9px monospace';
+        ctx.fillStyle = 'rgba(226, 232, 240, 0.55)';
+        ctx.textAlign = 'center';
+        ctx.fillText(n.name, n.x, bottomLineY + 22);
+
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    // Main animation loop
+    function animate() {
+      ctx.clearRect(0, 0, width, height);
+
+      const layout = getLayout();
+      const trackWidth = layout.rightMargin - layout.leftMargin;
+
+      // Update moving orbs and detect shape crossings
+      if (isPlaying) {
+        orbs.forEach((orb) => {
+          const prevXRatio = orb.xRatio;
+          const deltaRatio = ((baseSpeed * orb.speedMult) / trackWidth) * orb.dir;
+          orb.xRatio += deltaRatio;
+
+          // Bounce cleanly at ends
+          if (orb.xRatio >= 1) {
+            orb.xRatio = 1;
+            orb.dir = -1;
+          } else if (orb.xRatio <= 0) {
+            orb.xRatio = 0;
+            orb.dir = 1;
+          }
+
+          // Check if orb just crossed any shape's xRatio
+          shapes.forEach((sh) => {
+            const crossedRight =
+              orb.dir > 0 && prevXRatio < sh.xRatio && orb.xRatio >= sh.xRatio;
+            const crossedLeft =
+              orb.dir < 0 && prevXRatio > sh.xRatio && orb.xRatio <= sh.xRatio;
+
+            if (crossedRight || crossedLeft) {
+              sh.glow = 1.0;
+              const hitX = layout.leftMargin + sh.xRatio * trackWidth;
+              activateLane(sh.laneIndex, hitX, sh.type);
+            }
+          });
+        });
+      }
+
+      // Draw Guitar Strings & Drum Lanes
+      LANES.forEach((lane, i) => {
+        const y = layout.getLaneY(i);
+        const vib = stringVibrations[i];
+
+        // Label on left
+        ctx.save();
+        ctx.font = '600 11px monospace';
+        ctx.fillStyle = lane.color;
+        ctx.textAlign = 'right';
+        ctx.fillText(lane.name, layout.leftMargin - 18, y + 4);
+
+        // Draw vibrating string or dashed percussion guide
+        ctx.beginPath();
+        ctx.strokeStyle = lane.color;
+        ctx.globalAlpha = lane.type === 'guitar' ? 0.55 : 0.28;
+        ctx.lineWidth = lane.type === 'guitar' ? 1.4 + i * 0.22 : 1.2;
+
+        if (lane.type === 'drum') {
+          ctx.setLineDash([6, 8]);
+        }
+
+        const midX = (layout.leftMargin + layout.rightMargin) / 2;
+        const offset = Math.sin(vib.phase) * vib.amp;
+
+        ctx.moveTo(layout.leftMargin, y);
+        ctx.quadraticCurveTo(midX, y + offset, layout.rightMargin, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+
+        // Decay string vibration
+        if (vib.amp > 0.05) {
+          vib.phase += 0.65;
+          vib.amp *= 0.90;
+        } else {
+          vib.amp = 0;
+        }
+      });
+
+      // Draw vertical kinetic traveler beams & orbs
+      orbs.forEach((orb) => {
+        const x = layout.leftMargin + orb.xRatio * trackWidth;
+        const topY = layout.getLaneY(0) - 18;
+        const botY = layout.getLaneY(LANES.length - 1) + 18;
+
+        ctx.save();
+        const grad = ctx.createLinearGradient(x, topY, x, botY);
+        grad.addColorStop(0, 'rgba(56, 189, 248, 0.0)');
+        grad.addColorStop(0.5, 'rgba(56, 189, 248, 0.32)');
+        grad.addColorStop(1, 'rgba(236, 72, 153, 0.0)');
+
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, topY);
+        ctx.lineTo(x, botY);
+        ctx.stroke();
+
+        // Draw glowing traveler bead on each lane intersection
+        LANES.forEach((lane, idx) => {
+          const ly = layout.getLaneY(idx);
+          ctx.fillStyle = '#e0f2fe';
+          ctx.beginPath();
+          ctx.arc(x, ly, 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+      });
+
+      // Draw placed shapes
+      shapes.forEach((sh) => {
+        const x = layout.leftMargin + sh.xRatio * trackWidth;
+        const y = layout.getLaneY(sh.laneIndex);
+        const lane = LANES[sh.laneIndex];
+        drawShapeNode(x, y, sh.type, lane.color, sh.glow);
+        sh.glow *= 0.88;
+      });
+
+      // Draw expanding ripples
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        const rp = ripples[i];
+        ctx.save();
+        ctx.strokeStyle = rp.color;
+        ctx.globalAlpha = rp.alpha;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        rp.r += 1.8;
+        rp.alpha *= 0.91;
+        if (rp.alpha < 0.03) {
+          ripples.splice(i, 1);
+        }
+      }
+
+      // Draw scrolling sheet music at bottom
+      drawSheetMusic();
+
+      requestAnimationFrame(animate);
+    }
+
+    requestAnimationFrame(animate);
+
+    // Interaction: Click to place/remove shape, or drag across strings to strum manually
+    canvas.addEventListener('pointerdown', (e) => {
+      initAudio();
+      document.getElementById('hintText').style.opacity = '0';
+      isPointerDown = true;
+      pointerMoved = false;
+      lastPointer = { x: e.clientX, y: e.clientY };
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!isPointerDown) return;
+
+      const dx = e.clientX - lastPointer.x;
+      const dy = e.clientY - lastPointer.y;
+      if (Math.hypot(dx, dy) > 8) {
+        pointerMoved = true;
+      }
+
+      // Check if user's drag crossed any string or drum lane
+      const layout = getLayout();
+      if (e.clientX >= layout.leftMargin && e.clientX <= layout.rightMargin) {
+        LANES.forEach((lane, idx) => {
+          const ly = layout.getLaneY(idx);
+          const crossedDown = lastPointer.y < ly && e.clientY >= ly;
+          const crossedUp = lastPointer.y > ly && e.clientY <= ly;
+          if (crossedDown || crossedUp) {
+            activateLane(idx, e.clientX, selectedShape);
+          }
+        });
+      }
+
+      lastPointer = { x: e.clientX, y: e.clientY };
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (!isPointerDown) return;
+      isPointerDown = false;
+
+      // If it was a clean click (not a strum drag), place or remove a shape on the nearest lane
+      if (!pointerMoved) {
+        const layout = getLayout();
+        const trackWidth = layout.rightMargin - layout.leftMargin;
+        if (e.clientX < layout.leftMargin || e.clientX > layout.rightMargin) return;
+
+        // Find closest lane
+        let bestLane = -1;
+        let minDist = Infinity;
+        LANES.forEach((_, idx) => {
+          const d = Math.abs(e.clientY - layout.getLaneY(idx));
+          if (d < minDist) {
+            minDist = d;
+            bestLane = idx;
+          }
+        });
+
+        if (bestLane !== -1 && minDist < layout.laneSpacing * 0.48) {
+          const clickXRatio = (e.clientX - layout.leftMargin) / trackWidth;
+
+          // Check if clicking an existing shape to remove it
+          const existingIdx = shapes.findIndex(
+            (sh) =>
+              sh.laneIndex === bestLane &&
+              Math.abs(sh.xRatio - clickXRatio) * trackWidth < 18
+          );
+
+          if (existingIdx !== -1) {
+            shapes.splice(existingIdx, 1);
+          } else {
+            shapes.push({
+              laneIndex: bestLane,
+              xRatio: clickXRatio,
+              type: selectedShape,
+              glow: 1.0
+            });
+            activateLane(bestLane, e.clientX, selectedShape);
+          }
+        }
+      }
+    });
+
+    // HUD Controls
+    const playBtn = document.getElementById('playBtn');
+    playBtn.addEventListener('click', () => {
+      initAudio();
+      isPlaying = !isPlaying;
+      playBtn.textContent = isPlaying ? '▶ Play' : '⏸ Pause';
+      playBtn.classList.toggle('active', isPlaying);
+    });
+
+    document.querySelectorAll('[data-shape]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-shape]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedShape = btn.getAttribute('data-shape');
+      });
+    });
+
+    document.getElementById('spawnOrbBtn').addEventListener('click', () => {
+      initAudio();
+      if (orbs.length >= 4) {
+        orbs.shift();
+      }
+      orbs.push({
+        xRatio: Math.random() * 0.8 + 0.1,
+        dir: Math.random() > 0.5 ? 1 : -1,
+        speedMult: 0.75 + Math.random() * 0.6
+      });
+    });
+
+    document.getElementById('speedSlider').addEventListener('input', (e) => {
+      baseSpeed = parseFloat(e.target.value);
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      shapes = [];
+      sheetNotes = [];
+      orbs = [{ xRatio: 0.05, dir: 1, speedMult: 1.0 }];
+    });
+  </script>
+</body>
+</html>
